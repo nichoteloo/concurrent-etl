@@ -1,48 +1,49 @@
+import os
 import time
 import pandas as pd
 
+os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
+
 # extract functionality
-def extract(d):
-    transform(d)
+def extract():
+    return [os.getcwd()+'\\sample\\'+f for f in os.listdir('sample')]
 
 # transform functionality
-def transform(df):
-    load(df)
+def transform(file):
+    filename = (file.split('\\')[-1]).split('.')[0]
+    template = filename.split('_')[-1]
+
+    if template == 'OPERATIONS':
+        needed_column = ['Confirmed scrap (MEINH)', 'Confirmed yield (MEINH)', 'Operation Quantity (MEINH)']
+        database_column = ['confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity']
+    elif template == 'CONFIRMATION':
+        needed_column = ['Operation Quantity (MEINH)', 'Confirmed Yield (GMEIN)', 'Confirmed scrap (MEINH)', 'Confirm. counter']
+        database_column = ['operationQuantity', 'confirmYield', 'confirmScrap', 'confirmCounter']
+    else:
+        print("Template not found...")
+        exit()
+
+    df = pd.read_excel(file)[needed_column]
+    df.columns = database_column
+
+    for column in database_column:
+        df[column] = df[column].astype(int)
+  
+    load(df, filename)
 
 # load functionality
-def load(tdf):
-    tdf.to_csv('airport_freq_out_normal.csv',mode='a',header=False,index=False)
+def load(tdf, file):
+    tdf.to_csv(f'result/normal/{file}',mode='a',header=False,index=False)
     return "load complete!"
 
 # main program
 def main():
-    file = 'airport_freq.csv'
-    dtype_dict = {'id': 'int8',
-                  'airport_ref': 'int8',
-                  'airport_ident': 'category',
-                  'type': 'category',
-                  'description': 'category',
-                  'frequency_mhz': 'float16'}
-    
-    df = pd.read_csv(file, dtype=dtype_dict, low_memory=False)
-    chuck_size = int(df.shape[0] / 4)
-
-    # normal etl process
-    st = time.time()
-    extract(df) # 0.10 sec
-    en = time.time() - st
-    print("etl 1 execution time {} sec".format(en))
-
-    # explicitly separate etl process for each subset (more fast, 0.08 sec)
-    st = time.time()
-    for start in range(0, df.shape[0], chuck_size):
-        df_subset = df.iloc[start : start+chuck_size]
-        extract(df_subset)
-    en = time.time() - st
-    print("etl 2 execution time {} sec".format(en))
+    # explicitly separate etl process for each file
+    for file in extract():
+        transform(file)
 
 if __name__ == "__main__":
     start = time.time()
-    main() # 0.17 sec
+    main() # 79.60 sec, best 66.24 sec (cuma VSCODE doang apps yg kebuka)
     end = time.time() - start
     print("Total execution time {} sec".format(end))

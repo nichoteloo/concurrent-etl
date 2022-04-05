@@ -1,38 +1,51 @@
+import os
 import time
 import asyncio
 import pandas as pd
 
+os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
 pd.set_option('mode.chained_assignment', None)
 
-def extract(file):
-    dtype_dict = {'id': 'category',
-                  'airport_ref': 'category',
-                  'airport_ident': 'category',
-                  'type': 'category',
-                  'description': 'category',
-                  'frequency_mhz': 'float16'}
-    return pd.read_csv(file, dtype=dtype_dict,low_memory=False)
+# extract functionality
+def extract():
+    return [os.getcwd()+'\\sample\\'+f for f in os.listdir('sample')]
 
-async def transform(df):
-    df['ref_code'] = df['airport_ident'].astype(str)+str('***')
-    await load(df)
+# transform functionality
+async def transform(file):
+    filename = (file.split('\\')[-1]).split('.')[0]
+    template = filename.split('_')[-1]
 
-async def load(tdf):
-    tdf.to_csv('airport_freq_out_asyncio.csv', mode='a', header=False, index=False)
+    if template == 'OPERATIONS':
+        needed_column = ['Confirmed scrap (MEINH)', 'Confirmed yield (MEINH)', 'Operation Quantity (MEINH)']
+        database_column = ['confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity']
+    elif template == 'CONFIRMATION':
+        needed_column = ['Operation Quantity (MEINH)', 'Confirmed Yield (GMEIN)', 'Confirmed scrap (MEINH)', 'Confirm. counter']
+        database_column = ['operationQuantity', 'confirmYield', 'confirmScrap', 'confirmCounter']
+    else:
+        print("Template not found...")
+        exit()
+
+    df = pd.read_excel(file)[needed_column]
+    df.columns = database_column
+
+    for column in database_column:
+        df[column] = df[column].astype(int)
+
+    await load(df, filename)
+
+# load functionality
+async def load(tdf, file):
+    tdf.to_csv(f'result/asyncio/{file}',mode='a',header=False,index=False)
     await asyncio.sleep(0) # biar ngga exit process
 
+# main program
 async def main():
-    file = 'airport_freq.csv'
-    df = extract(file)
-    chuck_size = int(df.shape[0] / 4)
-
-    for start in range(0, df.shape[0], chuck_size):
-        df_subset = df.iloc[start: start+chuck_size]
-        x = asyncio.create_task(transform(df_subset))
+    for file in extract():
+        x = asyncio.create_task(transform(file))
         await x
 
 st = time.time()
-asyncio.run(main()) # 0.17 sec
+asyncio.run(main()) # best nya 66.52 sec (cuma VSCODE doang apps yg kebuka).
 end = time.time() - st
 print("Total execution time {} sec".format(end))
 

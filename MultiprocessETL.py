@@ -1,51 +1,66 @@
-from distutils.util import execute
+import os
 import time
 import pandas as pd
 import multiprocessing
 from multiprocessing import *
 from concurrent.futures import ProcessPoolExecutor
 
+os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
+
+# max_worker = os.cpu_count() or 1 ## 12 in my case
+
 lock = Lock()
-semTrn = Semaphore(5)
-semLd = Semaphore(5)
+semTrn = Semaphore(10)
+semLd = Semaphore(10)
 
-def extract(file):
-    dtype_dict = {'id': 'category',
-                  'airport_ref': 'category',
-                  'airport_ident': 'category',
-                  'type': 'category',
-                  'description': 'category',
-                  'frequency_mhz': 'float16'}
-    return pd.read_csv(file, dtype=dtype_dict, low_memory=False)
+# extract functionality
+def extract():
+    return [os.getcwd()+'\\sample\\'+f for f in os.listdir('sample')]
 
-def transform(df):
+# transform functionality
+def transform(file):
     print("process {} transform started ".format(multiprocessing.current_process().pid))
     semTrn.acquire()
-    df['ref_code'] = df['airport_ident'].astype(str)+str('***')
+    
+    filename = (file.split('\\')[-1]).split('.')[0]
+    template = filename.split('_')[-1]
+
+    if template == 'OPERATIONS':
+        needed_column = ['Confirmed scrap (MEINH)', 'Confirmed yield (MEINH)', 'Operation Quantity (MEINH)']
+        database_column = ['confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity']
+    elif template == 'CONFIRMATION':
+        needed_column = ['Operation Quantity (MEINH)', 'Confirmed Yield (GMEIN)', 'Confirmed scrap (MEINH)', 'Confirm. counter']
+        database_column = ['operationQuantity', 'confirmYield', 'confirmScrap', 'confirmCounter']
+    else:
+        print("Template not found...")
+        exit()
+
+    df = pd.read_excel(file)[needed_column]
+    df.columns = database_column
+
+    for column in database_column:
+        df[column] = df[column].astype(int)
+
     semTrn.release()
     print("process {} transform completion ".format(multiprocessing.current_process().pid))
 
-    semLd.acquire()
-    load(df)
-
-def load(tdf):
     print("process {} load started".format(multiprocessing.current_process().pid))
-    tdf.to_csv('airport_freq_out_multiprocess.csv', mode='a', header=False, index=False)
+    semLd.acquire()
+
+    load(df, filename)
+
+# load functionality
+def load(tdf, file):
+    tdf.to_csv(f'result/multiprocess/{file}',mode='a',header=False,index=False)
     semLd.release()
     print("process {} load completion ".format(multiprocessing.current_process().pid))
 
+# main program
 def main():
-    file = 'airport_freq.csv'
-    df = extract(file)
-    chunk_size = int(df.shape[0] / 4)
+    executor, lst = ProcessPoolExecutor(max_workers=10), list()
 
-    executor = ProcessPoolExecutor(max_workers=5)
-    lst = list()
-
-    for start in range(0, df.shape[0], chunk_size):
-        df_subset = df.iloc[start: start+chunk_size]
-        lst.append(executor.submit(transform, df_subset))
-    
+    for file in extract():
+        lst.append(executor.submit(transform, file))
     for future in lst:
         future.result()
     
@@ -53,6 +68,6 @@ def main():
 
 if __name__ == "__main__":
     st = time.time()
-    main()
+    main() # 21.67 sec best condition (cuma VSCODE doang apps yg kebuka).
     end = time.time() - st
     print("Execution time {} sec".format(end))

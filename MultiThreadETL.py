@@ -1,58 +1,67 @@
+import os
 import time
 import threading
 import pandas as pd
 from threading import *
 from concurrent.futures import ThreadPoolExecutor
 
+os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
+
+# max_worker = min(32, (os.cpu_count() or 1) + 4) ## 16 in my case
+
 lock = Lock()
-semTrn = Semaphore(4)
-semLd = Semaphore(4) 
+semTrn = Semaphore(10)
+semLd = Semaphore(10) 
 pd.set_option('mode.chained_assignment', None)
 
 # extract functionality
-def extract(file):
-    dtype_dict = {
-        'id': 'category',
-        'airport_ref': 'category',
-        'airport_ident': 'category',
-        'type': 'category',
-        'description': 'category',
-        'frequency_mhz': 'float16'
-    }
-    return pd.read_csv(file, dtype=dtype_dict, low_memory=False)
+def extract():
+    return [os.getcwd()+'\\sample\\'+f for f in os.listdir('sample')]
 
 # transform functionality
-def transform(df):
+def transform(file):
     semTrn.acquire() # lock transform process
     print("thread {} acquired transform lock".format(threading.currentThread().ident))
-    df['ref_code'] = df['airport_ident'].astype(str)+str('***') # basic transform
+
+    filename = (file.split('\\')[-1]).split('.')[0]
+    template = filename.split('_')[-1]
+
+    if template == 'OPERATIONS':
+        needed_column = ['Confirmed scrap (MEINH)', 'Confirmed yield (MEINH)', 'Operation Quantity (MEINH)']
+        database_column = ['confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity']
+    elif template == 'CONFIRMATION':
+        needed_column = ['Operation Quantity (MEINH)', 'Confirmed Yield (GMEIN)', 'Confirmed scrap (MEINH)', 'Confirm. counter']
+        database_column = ['operationQuantity', 'confirmYield', 'confirmScrap', 'confirmCounter']
+    else:
+        print("Template not found...")
+        exit()
+
+    df = pd.read_excel(file)[needed_column]
+    df.columns = database_column
+
+    for column in database_column:
+        df[column] = df[column].astype(int)
+
     semTrn.release() # release transform process
-
     print("thread {} released tranform lock ".format(threading.currentThread().ident))
-    print("thread {} acquired load lock ".format(threading.currentThread().ident))
 
+    print("thread {} acquired load lock ".format(threading.currentThread().ident))
     semLd.acquire() # lock load process
-    load(df) 
+
+    load(df, filename)
 
 # load functionality
-def load(tdf):
-    tdf.to_csv('airport_freq_out_multithread.csv', mode='a', header=False, index=False)
+def load(tdf, file):
+    tdf.to_csv(f'result/multithread/{file}',mode='a',header=False,index=False)
     semLd.release() # release load process
     print("thread {} released load lock  ".format(threading.currentThread().ident))
-    print("thread {} load completion ".format(threading.currentThread().ident))
 
 # main program
 def main():
-    file = 'airport_freq.csv'
-    df = extract(file)
-    chunk_size = int(df.shape[0] / 4)
-
-    executor = ThreadPoolExecutor(max_workers=4)
-
-    lst = list()
-    for st in range(0, df.shape[0], chunk_size):
-        df_subset = df.iloc[st : st+chunk_size]
-        lst.append(executor.submit(transform, df_subset))
+    executor, lst = ThreadPoolExecutor(max_workers=10), list()
+    
+    for file in extract():
+        lst.append(executor.submit(transform, file))
     for future in lst:
         future.result()
     
@@ -60,7 +69,7 @@ def main():
 
 if __name__ == "__main__":
     start = time.time()
-    main() # kurang lebih sama kyk normal 0.20 sec
+    main() # 90.20 sec, sometimes 100.17, depends on cpu. bestnya 81 sec  (cuma VSCODE doang apps yg kebuka).
     end = time.time() - start
     print("Total execution time {} sec".format(end)) 
 
