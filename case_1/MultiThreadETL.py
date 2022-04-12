@@ -5,7 +5,7 @@ import pandas as pd
 from threading import *
 from concurrent.futures import ThreadPoolExecutor
 
-os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
+os.chdir(r'D:\concurrent-etl\case_1')
 
 # max_worker = min(32, (os.cpu_count() or 1) + 4) ## 16 in my case
 

@@ -3,7 +3,7 @@ import time
 import asyncio
 import pandas as pd
 
-os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
+os.chdir(r'D:\concurrent-etl\case_1')
 pd.set_option('mode.chained_assignment', None)
 
 # extract functionality

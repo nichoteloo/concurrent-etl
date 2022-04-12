@@ -2,7 +2,7 @@ import os
 import time
 import pandas as pd
 
-os.chdir(r'C:\Users\HP\OneDrive\Desktop\concurrent etl')
+os.chdir(r'D:\concurrent-etl\case_1')
 
 # extract functionality
 def extract():

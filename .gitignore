@@ -2,3 +2,6 @@ venv/
 .ipynb_checkpoints/
 result/
 sample/
+operation/
+confirmation/
+*.json
