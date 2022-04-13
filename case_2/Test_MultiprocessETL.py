@@ -1,3 +1,5 @@
+# not fix yet ....
+
 import os
 import json
 import time
@@ -362,7 +364,6 @@ def main():
     # # with multithreading
     # t = threading.Thread(target=etl)
     # t.start()
-
 
     # # with parallel
     # executor, lst = ProcessPoolExecutor(max_workers=10), list()

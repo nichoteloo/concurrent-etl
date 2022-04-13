@@ -4,23 +4,19 @@ import json
 import sys
 import time
 import urllib
-import psutil
-import threading
 import numpy as np
 import pandas as pd
+import threading
+from queue import Queue
+from multiprocessing import *
+import psutil
 from sqlalchemy import create_engine
-# import multiprocessing
-# from queue import Queue
-# from multiprocessing import *
+
 
 pd.options.mode.chained_assignment = None
 SAMPLING_TIME = 6
 MAX_INSERT_ROW = 1000
 CONFIG_DIRECTORY = './transform_load_config.json'
-
-# lock = Lock()
-# semTrn = Semaphore()
-# semTdn = Semaphore()
 
 # ========================================================================
 # Create Database Connection
@@ -49,7 +45,6 @@ def connect_mssql():
     except Exception as argument:
         print(argument)
         return None, None
-
 
 # ========================================================================
 # Helper Functions
@@ -85,37 +80,10 @@ def update_master_table(df, table_name, schema, inserted_column, column_to_join,
 
 
 # ========================================================================
-# Custom Thread Class
-# ========================================================================
-# custom thread for preprocess each file
-class preprocessThread(threading.Thread):
-    def __init__(self, file):
-        threading.Thread.__init__(self)
-        self.threadID   = threading
-        self.file       = file
-    def run(self):
-        preprocess(self.threadID, self.file) 
-
-# custom thread for transform process each file
-class transformLoadThread(threading.Thread):
-    def __init__(self, threadID, df, template, file):
-        threading.Thread.__init__(self)
-        self.threadID   = threadID
-        self.df         = df
-        self.template   = template
-        self.file       = file
-    def run(self):
-        if self.template == 'OPERATIONS':
-            transformLoadOperation(self.threadID, self.df, self.file)
-        elif self.template == 'CONFIRMATION':
-            transformLoadConfirmation(self.threadID, self.df, self.file)
-
-
-# ========================================================================
 # Preprocess Function
 # ========================================================================
 # for each file specific type
-def preprocess(threadID, file):
+def preprocess(file):
     filename = (file.split('\\')[-1]).split('.')[0]
     template = filename.split('_')[-1]
 
@@ -131,141 +99,41 @@ def preprocess(threadID, file):
 
     print(f'Start transform load data of {filename}')
 
+    transformed_data_total = []
     for i in range(total_thread):
         idx_start = i * MAX_INSERT_ROW
         idx_end = (MAX_INSERT_ROW) + i * MAX_INSERT_ROW 
         if idx_end > total_data : idx_end = total_data
 
         df_ = df.iloc[idx_start:idx_end,:]
+        transformed_data_total.append(transformConfirmation(df_, filename))
 
-        thread = transformLoadThread(i + 1, df_, template, filename)
-        threads.append(thread)
-        thread.start()
+        # thread = transformThread(i + 1, df, template, filename)
+        # threads.append(thread)
+        # thread.start()
     
-    for t in threads:
-        t.join()
+    # for t in threads:
+    #     t.join()
 
+    # # get from queue
+    # list_, threads = q.get(), []
 
-# ========================================================================
-# Operation Template
-# ========================================================================
-# transform operation
-def transformLoadOperation(threadID, df, file):
-    engine, connection = connect_mssql()
+    # for l in list_:
+    #     thread = loadThread(i + 1, l[0], template, l[1])
+    #     threads.append(thread)
+    #     thread.start()
 
-    if (not engine) or (not connection):
-        try:
-            connect_mssql()
-        except Exception as argument:
-            print('cannot connect to SQL Server for TL Operation')
-            print(argument)
-    else:
-        needed_column = ['Order', 'Plant', 'Activity',
-                        'LatstStartDateExecutn', 'LatstFinishDateExectn',
-                        'ActStartDateExecution', 'ActStartTimeExecution', 'ActFinishDateExecutn', 'ActFinishTimeExecutn',
-                        'Work center', 'Work center description', 
-                        'Confirmed scrap (MEINH)', 'Confirmed yield (MEINH)', 'Operation Quantity (MEINH)',
-                        'System Status',
-                        'Standard value 1 (VGE01)', 'Standard value 2 (VGE02)', 'Standard value 4 (VGE04)', 'Standard value 5 (VGE05)',
-                        'Queue Time (WRTZE)',
-                        'Confirmed activ. 1 (ILE01)', 'Confirmed activ. 2 (ILE02)', 'Confirmed activ. 4 (ILE04)', 'Confirmed activ. 5 (ILE05)']
+    # for t in threads:
+    #     t.join()
 
-        database_column = ['productionOrder', 'site', 'activity', 
-                            'plannedStartDate', 'plannedFinishDate', 
-                            'actualStartDateExecution', 'actualStartTimeExecution', 'actualFinishDateExecution', 'actualFinishTimeExecution',
-                            'workCentre', 'workCentreDisplayName', 
-                            'confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity', 
-                            'activityOrderStatus', 
-                            'standardLabourTime', 'standardSetupTime', 'standardProcessTime', 'standardReworkTime', 
-                            'standardQueueTime', 
-                            'actualLabourTime', 'actualSetupTime', 'actualProcessTime', 'actualReworkTime']
-        
-        # rename columns
-        df = df[needed_column]
-        df.columns = database_column
-
-        # Convert integer column type
-        int_column = ['confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity']
-        for column in int_column:
-            df[column] = df[column].astype(int)
-
-        # Convert float column type
-        float_column = ['standardLabourTime','standardSetupTime','standardProcessTime','standardReworkTime',
-                        'standardQueueTime',
-                        'actualLabourTime','actualSetupTime','actualProcessTime','actualReworkTime']
-        for column in float_column:
-            df[column] = df[column].astype(float)
-        
-        # Convert date column type
-        date_column = ['plannedStartDate','plannedFinishDate',
-                    'actualStartDateExecution','actualFinishDateExecution']
-        for column in date_column:
-            # Uniform the date format to %Y-%m-%d, convert again to string, then replace NaT with None
-            df[column] = pd.to_datetime(df[column].str[:10], format='%Y-%m-%d', errors='coerce').astype(str).replace({'NaT' : None})
-
-        # Convert time column type
-        time_column = ['actualStartTimeExecution', 'actualFinishTimeExecution']
-        for column in time_column:
-            # Uniform the date format to %H:%M:%S, convert again to string, then replace NaT with None
-            df[column] = pd.to_datetime(df[column].str[-8:], format='%H:%M:%S', errors='coerce').dt.time.replace({'NaT' : None})
-
-        # Convert WorkCentre
-        df['workCentre'] = df['workCentre'].str[:-3]
-
-        # Update all Master Table
-        dbo_ProductionOrder = update_master_table(df, table_name='ProductionOrder', schema='dbo',
-                                                inserted_column=['productionOrder'],
-                                                column_to_join = ['ID', 'productionOrder'],
-                                                rename_column = ['productionOrderID', 'productionOrder'])
-        dbo_Site            = update_master_table(df, table_name='Site', schema='dbo',
-                                                inserted_column=['site'],
-                                                column_to_join = ['ID', 'site'],
-                                                rename_column = ['siteID', 'site'])
-        dbo_Activity        = update_master_table(df, table_name='Activity', schema='dbo',
-                                                inserted_column=['activity'],
-                                                column_to_join = ['ID', 'activity'],
-                                                rename_column = ['activityID', 'activity'])
-        dbo_WorkCentre      = update_master_table(df, table_name='WorkCentre', schema='dbo',
-                                                inserted_column=['workCentre', 'workCentreDisplayName'],
-                                                column_to_join = ['ID', 'workCentre'],
-                                                rename_column = ['workCentreID', 'workCentre']) 
-        
-        # dbo_ProductionOrder['productionOrder'] = dbo_ProductionOrder['productionOrder'].astype(np.int64)
-        # dbo_Site['site'] = dbo_Site['site'].astype(np.int64)
-        # dbo_Activity['activity'] = dbo_Activity['activity'].astype(np.int64)
-
-        # Join all table
-        transformed_data = df
-        transformed_data = pd.merge(transformed_data, dbo_ProductionOrder, how='left', on='productionOrder')
-        transformed_data = pd.merge(transformed_data, dbo_Site, how='left', on='site')
-        transformed_data = pd.merge(transformed_data, dbo_Activity, how='left', on='activity')
-        transformed_data = pd.merge(transformed_data, dbo_WorkCentre, how='left', on='workCentre')
-
-        # Select needed column
-        transformed_data = transformed_data[['productionOrderID', 'siteID', 'activityID',
-                    'plannedStartDate', 'plannedFinishDate',
-                    'actualStartDateExecution', 'actualStartTimeExecution','actualFinishDateExecution', 'actualFinishTimeExecution',
-                    'workCentreID',
-                    'confirmedActivityScrapQuantity', 'confirmedYield', 'totalOrderQuantity',
-                    'activityOrderStatus',
-                    'standardLabourTime','standardSetupTime','standardProcessTime','standardReworkTime',
-                    'standardQueueTime',
-                    'actualLabourTime','actualSetupTime','actualProcessTime','actualReworkTime']]
-
-        # load to temp table
-        transformed_data.to_sql('TempProductionActivityTransaction', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
-        
-        # just for checking
-        transformed_data.to_csv(f'result/{file}.csv',mode='a',header=False,index=False)
-
-        print(f'{threadID} finish transform load data operation of {file}')
+    print(f'Finish transform load data of {filename}')
 
 
 # ========================================================================
 # Confirmation Template
 # ========================================================================
 # transform confirmation
-def transformLoadConfirmation(threadID, df, file):
+def transformConfirmation(df, file):
     engine, connection = connect_mssql()
 
     if (not engine) or (not connection):
@@ -274,7 +142,11 @@ def transformLoadConfirmation(threadID, df, file):
         except Exception as argument:
             print('cannot connect to SQL Server for TL Confirmation')
             print(argument)
-    else:        
+    else:
+        # semTrn.acquire() # lock transform process
+        # print("thread {} acquired transform lock".format(threading.currentThread().ident))
+        # print(f"before update merge table : {df}")
+        
         needed_column = ['Order', 'Plant',
                         'Posting Date', 'Time',
                         'Activity', 'Work Center', 'Operation Quantity (MEINH)', 'Personnel number',
@@ -313,7 +185,7 @@ def transformLoadConfirmation(threadID, df, file):
         for column in date_column:
             # Uniform the date format to %Y-%m-%d, convert again to string, then replace NaT with None
             df[column] = pd.to_datetime(df[column].str[:10], format='%Y-%m-%d', errors='coerce').astype(str).replace({'NaT' : None})
-        
+
         # Convert time column type
         time_column = ['postingTime',
                     'executionStartTime', 'executionFinishTime']
@@ -323,6 +195,12 @@ def transformLoadConfirmation(threadID, df, file):
 
         # Convert WorkCentre
         df['workCentre'] = df['workCentre'].str[:-3]
+
+        # import pdb; pdb.set_trace()
+
+        # print(f"after update merge table : {transformed_data}")
+        # semTrn.release() # release transform process
+        # print("thread {} released tranform lock ".format(threading.currentThread().ident))
         
         # Update all Master Table
         dbo_ProductionOrder = update_master_table(df, table_name='ProductionOrder', schema='dbo',
@@ -353,14 +231,21 @@ def transformLoadConfirmation(threadID, df, file):
         transformed_data = pd.merge(transformed_data, dbo_Activity, how='left', on='activity')
         transformed_data = pd.merge(transformed_data, dbo_WorkCentre, how='left', on='workCentre')
         
+        # # add list to queue
+        # q.put([transformed_data, file])
+
+        # return transformed_data, file
+
         # Get productionActivityTransactionID from available data
         production_order_ID_unique = transformed_data[['productionOrderID']].drop_duplicates(subset = ['productionOrderID'])
         production_order_ID_unique_joined = '(' + ', '.join(production_order_ID_unique['productionOrderID'].astype(str)) + ')'
         
-        query_string = """SELECT DISTINCT ID, productionOrderID, siteID, activityID
+        query_string = """SELECT DISTINCT
+                        ID,
+                        productionOrderID, siteID, activityID
                         FROM [TW_Operational].[dbo].[ProductionActivityTransaction]
                         WHERE productionOrderID IN """ + production_order_ID_unique_joined
-        
+        # print(query_string)
         dbo_ProductionActivityTransaction = pd.DataFrame(connection.execute(query_string).fetchall(),
                                                         columns = ['productionActivityTransactionID',
                                                                     'productionOrderID', 'siteID', 'activityID'])
@@ -378,11 +263,20 @@ def transformLoadConfirmation(threadID, df, file):
                                             'executionStartDate', 'executionStartTime', 'executionFinishDate', 'executionFinishTime']]
 
         # load to temp table
+        connection.execute("DELETE FROM [TW_Operational].[dbo].[TempProductionActivityConfirmation];")
         transformed_data.to_sql('TempProductionActivityConfirmation', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
+
+        # check updated rows
+        temp_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityConfirmation];").fetchone()[0]
+        if temp_loaded_row > 0:
+            print(f'Total affected rows from {file} Confirmation insertion is {temp_loaded_row}')
+
+        # merge to merge table
+        connection.execute(""" UPDATE [TW_Operational].[trigger].[MergeProductionActivityConfirmation]
+                            SET process = 'EXEC [TW_Operational].[dbo].[MergeProductionActivityConfirmation]', run_at = CURRENT_TIMESTAMP;""")
         
         transformed_data.to_csv(f'result/{file}.csv',mode='a',header=False,index=False)
 
-        print(f'{threadID} finish transform load data confirmation of {file}')
 
 
 # ========================================================================
@@ -392,7 +286,6 @@ if __name__ == "__main__":
     print('Start TL Process')
     p = psutil.Process(os.getpid())
     p.nice(psutil.HIGH_PRIORITY_CLASS)
-    _, connection = connect_mssql()
 
     time_process, count, max_try, threads_ = 0, 0, 3, []
     while True:
@@ -414,36 +307,16 @@ if __name__ == "__main__":
                         count = max_try
                     else:
                         count += 1
-
-                    start_time = time.time()
-
-                    # delete temp
-                    connection.execute("DELETE FROM [TW_Operational].[dbo].[TempProductionActivityTransaction];")
-                    connection.execute("DELETE FROM [TW_Operational].[dbo].[TempProductionActivityConfirmation];")
                     
                     for filepath, filename in zip(sample_files, filenames):
                         if filename not in exported_files:
-                            thread = preprocessThread(file=filepath)
-                            threads_.append(thread)
-                            thread.start()
+                            preprocess(filepath)
+                    #         thread = preprocessThread(file=filepath)
+                    #         threads_.append(thread)
+                    #         thread.start()
                     
-                    for t in threads_:
-                        t.join()
-
-                    # # check updated rows
-                    # ops_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityTransaction];").fetchone()[0]
-                    # print(f'Total affected rows from Operational insertion is {ops_loaded_row}')
-                    # cnf_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityConfirmation];").fetchone()[0]
-                    # print(f'Total affected rows from Confirmation insertion is {cnf_loaded_row}')
-
-                    # merge table
-                    connection.execute(""" UPDATE [TW_Operational].[trigger].[MergeProductionActivityTransaction]
-                                        SET process = 'EXEC [TW_Operational].[dbo].[MergeProductionActivityTransaction]', run_at = CURRENT_TIMESTAMP;""")
-                    connection.execute(""" UPDATE [TW_Operational].[trigger].[MergeProductionActivityConfirmation]
-                                        SET process = 'EXEC [TW_Operational].[dbo].[MergeProductionActivityConfirmation]', run_at = CURRENT_TIMESTAMP;""")
-
-                    execution_time = time.time() - start_time
-                    print(f'Total time taken is {execution_time}')
+                    # for t in threads_:
+                    #     t.join()
 
                 time_process = time.time()
         except KeyboardInterrupt:
