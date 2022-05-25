@@ -10,7 +10,8 @@ import threading
 from queue import Queue
 from multiprocessing import *
 import psutil
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Table, MetaData
+from sqlalchemy.orm import sessionmaker
 
 
 pd.options.mode.chained_assignment = None
@@ -146,6 +147,9 @@ def transformConfirmation(df, file):
         # semTrn.acquire() # lock transform process
         # print("thread {} acquired transform lock".format(threading.currentThread().ident))
         # print(f"before update merge table : {df}")
+
+        # Session = sessionmaker(engine)
+        # session = Session()
         
         needed_column = ['Order', 'Plant',
                         'Posting Date', 'Time',
@@ -239,6 +243,12 @@ def transformConfirmation(df, file):
         # Get productionActivityTransactionID from available data
         production_order_ID_unique = transformed_data[['productionOrderID']].drop_duplicates(subset = ['productionOrderID'])
         production_order_ID_unique_joined = '(' + ', '.join(production_order_ID_unique['productionOrderID'].astype(str)) + ')'
+        
+        # import pdb; pdb.set_trace()
+        
+        # meta, columns = MetaData(), ['ProductionActivityTransaction.ID', 'productionOrderID', 'siteID', 'activityID']
+        # table_PAT = Table('ProductionActivityTransaction', meta, autoload=True, autoload_with=engine)
+        # result = session.query(table_PAT).filter(table_PAT.c.productionOrderID==production_order_ID_unique_joined).all()
         
         query_string = """SELECT DISTINCT
                         ID,

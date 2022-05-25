@@ -8,9 +8,10 @@ import psutil
 import threading
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine
+from sqlalchemy import MetaData, Table, create_engine, event
+from sqlalchemy.orm import sessionmaker
 # import multiprocessing
-# from queue import Queue
+from queue import Queue
 # from multiprocessing import *
 
 pd.options.mode.chained_assignment = None
@@ -22,6 +23,9 @@ CONFIG_DIRECTORY = './transform_load_config.json'
 # semTrn = Semaphore()
 # semTdn = Semaphore()
 
+# queue_time_ops = Queue()
+# queue_time_cnf = Queue()
+
 # ========================================================================
 # Create Database Connection
 # ========================================================================
@@ -31,6 +35,7 @@ def connect_mssql():
         with open(CONFIG_DIRECTORY) as config_file:
             SAP_CONFIG = json.load(config_file)
     except Exception as argument:
+        print("Cant read config")
         print(argument) 
 
     try:
@@ -42,11 +47,12 @@ def connect_mssql():
             'PWD='      + SAP_CONFIG['SQL_SERVER']['PASSWORD'] + ';'
         )
 
-        engine = create_engine('mssql+pyodbc:///?odbc_connect=' + sql_server_param, 
-                                fast_executemany = True, connect_args={'connect_timeout': 10}, echo=False)
+        engine = create_engine('mssql+pyodbc:///?odbc_connect=' + sql_server_param)
         connection = engine.connect()
+
         return engine, connection
     except Exception as argument:
+        print("Cant connect to sql server")
         print(argument)
         return None, None
 
@@ -82,8 +88,7 @@ def update_master_table(df, table_name, schema, inserted_column, column_to_join,
     master_table = master_table[column_to_join].drop_duplicates(subset = [base_column])
     master_table.columns = rename_column
     return master_table
-
-
+    
 # ========================================================================
 # Custom Thread Class
 # ========================================================================
@@ -97,7 +102,7 @@ class preprocessThread(threading.Thread):
         preprocess(self.threadID, self.file) 
 
 # custom thread for transform process each file
-class transformLoadThread(threading.Thread):
+class transformThread(threading.Thread):
     def __init__(self, threadID, df, template, file):
         threading.Thread.__init__(self)
         self.threadID   = threadID
@@ -106,9 +111,22 @@ class transformLoadThread(threading.Thread):
         self.file       = file
     def run(self):
         if self.template == 'OPERATIONS':
-            transformLoadOperation(self.threadID, self.df, self.file)
+            transformOperation(self.threadID, self.df, self.file)
         elif self.template == 'CONFIRMATION':
-            transformLoadConfirmation(self.threadID, self.df, self.file)
+            transformConfirmation(self.threadID, self.df, self.file)
+
+# custom thread for load process each file
+class loadThread(threading.Thread):
+    def __init__(self, filename, template, queue):
+        threading.Thread.__init__(self)
+        self.filename   = filename
+        self.template   = template
+        self.queue      = queue
+    def run(self):
+        if self.template == 'OPERATIONS':
+            loadOperation(self.filename, self.queue)
+        elif self.template == 'CONFIRMATION':
+            loadConfirmation(self.filename, self.queue)
 
 
 # ========================================================================
@@ -120,10 +138,9 @@ def preprocess(threadID, file):
     template = filename.split('_')[-1]
 
     # Read excel data
-    start_function_time = time.time()
+    start_read = time.time()
     df = pd.read_excel(file, na_values=None, dtype=str)
-    read_excel_time = time.time() - start_function_time
-    print(f'Total read excel time is {read_excel_time}')
+    read_excel_time = round(time.time() - start_read)
 
     total_data = len(df.index)
     total_thread = math.ceil(total_data/MAX_INSERT_ROW)
@@ -131,6 +148,8 @@ def preprocess(threadID, file):
 
     print(f'Start transform load data of {filename}')
 
+    # transfrom process
+    start_transform = time.time()
     for i in range(total_thread):
         idx_start = i * MAX_INSERT_ROW
         idx_end = (MAX_INSERT_ROW) + i * MAX_INSERT_ROW 
@@ -138,19 +157,37 @@ def preprocess(threadID, file):
 
         df_ = df.iloc[idx_start:idx_end,:]
 
-        thread = transformLoadThread(i + 1, df_, template, filename)
+        thread = transformThread(i + 1, df_, template, filename)
         threads.append(thread)
         thread.start()
     
     for t in threads:
         t.join()
+    transform_time = round(time.time() - start_transform)
 
+    # load process
+    start_load = time.time()
+    q = Queue()
+    thread = loadThread(filename, template, q)
+    thread.start()
+    loaded_rows = thread.queue.get()
+    thread.join()
+    load_time = round(time.time() - start_load)
+
+    time_string = '''
+    File is {0}
+    Total read time is {1}
+    TOtal transform time is {2}
+    Total load time is {3}
+    Total loaded rows is {4}
+    '''.format(filename, read_excel_time, transform_time, load_time, loaded_rows)
+    print(time_string)
 
 # ========================================================================
 # Operation Template
 # ========================================================================
 # transform operation
-def transformLoadOperation(threadID, df, file):
+def transformOperation(threadID, df, file):
     engine, connection = connect_mssql()
 
     if (not engine) or (not connection):
@@ -160,6 +197,7 @@ def transformLoadOperation(threadID, df, file):
             print('cannot connect to SQL Server for TL Operation')
             print(argument)
     else:
+        # start_transform = time.time()
         needed_column = ['Order', 'Plant', 'Activity',
                         'LatstStartDateExecutn', 'LatstFinishDateExectn',
                         'ActStartDateExecution', 'ActStartTimeExecution', 'ActFinishDateExecutn', 'ActFinishTimeExecutn',
@@ -251,21 +289,40 @@ def transformLoadOperation(threadID, df, file):
                     'standardLabourTime','standardSetupTime','standardProcessTime','standardReworkTime',
                     'standardQueueTime',
                     'actualLabourTime','actualSetupTime','actualProcessTime','actualReworkTime']]
+        # transform_time = round(time.time() - start_transform)
+        # print(f'Total transform excel time of {file} is {transform_time}')
 
+        # start_load = time.time()
         # load to temp table
-        transformed_data.to_sql('TempProductionActivityTransaction', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
-        
+        # transformed_data.to_sql('TempProductionActivityTransaction', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
+
         # just for checking
-        transformed_data.to_csv(f'result/{file}.csv',mode='a',header=False,index=False)
+        transformed_data.to_csv(f'result/{file}.csv',mode='a',header=True,index=False)
+        # load_time = round(time.time() - start_load)
+
+        # print(f'Total load excel time of {file} is {load_time}')
+
+        # queue_time_ops.put([file, transform_time, load_time])
 
         print(f'{threadID} finish transform load data operation of {file}')
+
+# load operation
+def loadOperation(filename, que):
+    # df = pd.read_csv(f'result/{filename}.csv')
+    engine, connection = connect_mssql()
+
+    # df.to_sql('TempProductionActivityTransaction', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
+    # temp_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityTransaction];").fetchone()[0]
+    temp_loaded_row = 20
+    que.put(temp_loaded_row)
+
 
 
 # ========================================================================
 # Confirmation Template
 # ========================================================================
 # transform confirmation
-def transformLoadConfirmation(threadID, df, file):
+def transformConfirmation(threadID, df, file):
     engine, connection = connect_mssql()
 
     if (not engine) or (not connection):
@@ -275,6 +332,10 @@ def transformLoadConfirmation(threadID, df, file):
             print('cannot connect to SQL Server for TL Confirmation')
             print(argument)
     else:        
+        Session = sessionmaker(engine)
+        session = Session()
+
+        # start_transform = time.time()
         needed_column = ['Order', 'Plant',
                         'Posting Date', 'Time',
                         'Activity', 'Work Center', 'Operation Quantity (MEINH)', 'Personnel number',
@@ -356,12 +417,16 @@ def transformLoadConfirmation(threadID, df, file):
         # Get productionActivityTransactionID from available data
         production_order_ID_unique = transformed_data[['productionOrderID']].drop_duplicates(subset = ['productionOrderID'])
         production_order_ID_unique_joined = '(' + ', '.join(production_order_ID_unique['productionOrderID'].astype(str)) + ')'
+
+        meta = MetaData()
+        table_PAT = Table('ProductionActivityTransaction', meta, autoload=True, autoload_with=engine)
+        result = session.query(table_PAT).filter(table_PAT.productionOrderID==production_order_ID_unique_joined).all()
         
-        query_string = """SELECT DISTINCT ID, productionOrderID, siteID, activityID
-                        FROM [TW_Operational].[dbo].[ProductionActivityTransaction]
-                        WHERE productionOrderID IN """ + production_order_ID_unique_joined
+        # query_string = """SELECT DISTINCT ID, productionOrderID, siteID, activityID
+        #                 FROM [TW_Operational].[dbo].[ProductionActivityTransaction]
+        #                 WHERE productionOrderID IN """ + production_order_ID_unique_joined
         
-        dbo_ProductionActivityTransaction = pd.DataFrame(connection.execute(query_string).fetchall(),
+        dbo_ProductionActivityTransaction = pd.DataFrame(result,
                                                         columns = ['productionActivityTransactionID',
                                                                     'productionOrderID', 'siteID', 'activityID'])
 
@@ -376,19 +441,39 @@ def transformLoadConfirmation(threadID, df, file):
                                             'confirmation', 'confirmCounter',
                                             'labourTime', 'setupTime', 'processTime', 'reworkTime',
                                             'executionStartDate', 'executionStartTime', 'executionFinishDate', 'executionFinishTime']]
+        # transform_time = round(time.time() - start_transform)
+        # print(f'Total transform excel time of {file} is {transform_time}')
 
+        # start_load = time.time()
         # load to temp table
-        transformed_data.to_sql('TempProductionActivityConfirmation', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
+        # transformed_data.to_sql('TempProductionActivityConfirmation', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
         
-        transformed_data.to_csv(f'result/{file}.csv',mode='a',header=False,index=False)
+        transformed_data.to_csv(f'result/{file}.csv',mode='a',header=True,index=False)
+        # load_time = round(time.time() - start_load)
+
+        # print(f'Total load excel time of {file} is {load_time}')
+
+        # queue_time_cnf.put([file, transform_time, load_time])
 
         print(f'{threadID} finish transform load data confirmation of {file}')
+
+# load confirmation
+def loadConfirmation(filename, que):
+    df = pd.read_csv(f'result/{filename}.csv')
+    engine, connection = connect_mssql()
+
+    df.to_sql('TempProductionActivityConfirmation', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
+    temp_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityConfirmation];").fetchone()[0]
+    # temp_loaded_row = 50
+    que.put(temp_loaded_row)
 
 
 # ========================================================================
 # Main Function
 # ========================================================================
 if __name__ == "__main__":
+    # global engine, connection
+
     print('Start TL Process')
     p = psutil.Process(os.getpid())
     p.nice(psutil.HIGH_PRIORITY_CLASS)
