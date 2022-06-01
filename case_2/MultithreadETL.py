@@ -6,13 +6,10 @@ import time
 import urllib
 import psutil
 import threading
-import numpy as np
 import pandas as pd
-from sqlalchemy import MetaData, Table, create_engine, event
+from sqlalchemy import MetaData, Table, create_engine
 from sqlalchemy.orm import sessionmaker
-# import multiprocessing
 from queue import Queue
-# from multiprocessing import *
 
 pd.options.mode.chained_assignment = None
 SAMPLING_TIME = 6
@@ -102,7 +99,7 @@ class preprocessThread(threading.Thread):
         preprocess(self.threadID, self.file) 
 
 # custom thread for transform process each file
-class transformThread(threading.Thread):
+class transformLoadThread(threading.Thread):
     def __init__(self, threadID, df, template, file):
         threading.Thread.__init__(self)
         self.threadID   = threadID
@@ -111,22 +108,9 @@ class transformThread(threading.Thread):
         self.file       = file
     def run(self):
         if self.template == 'OPERATIONS':
-            transformOperation(self.threadID, self.df, self.file)
+            transformLoadOperation(self.threadID, self.df, self.file)
         elif self.template == 'CONFIRMATION':
-            transformConfirmation(self.threadID, self.df, self.file)
-
-# custom thread for load process each file
-class loadThread(threading.Thread):
-    def __init__(self, filename, template, queue):
-        threading.Thread.__init__(self)
-        self.filename   = filename
-        self.template   = template
-        self.queue      = queue
-    def run(self):
-        if self.template == 'OPERATIONS':
-            loadOperation(self.filename, self.queue)
-        elif self.template == 'CONFIRMATION':
-            loadConfirmation(self.filename, self.queue)
+            transformLoadConfirmation(self.threadID, self.df, self.file)
 
 
 # ========================================================================
@@ -157,37 +141,26 @@ def preprocess(threadID, file):
 
         df_ = df.iloc[idx_start:idx_end,:]
 
-        thread = transformThread(i + 1, df_, template, filename)
+        thread = transformLoadThread(i + 1, df_, template, filename)
         threads.append(thread)
         thread.start()
     
     for t in threads:
         t.join()
-    transform_time = round(time.time() - start_transform)
-
-    # load process
-    start_load = time.time()
-    q = Queue()
-    thread = loadThread(filename, template, q)
-    thread.start()
-    loaded_rows = thread.queue.get()
-    thread.join()
-    load_time = round(time.time() - start_load)
+    transform_load_time = round(time.time() - start_transform)
 
     time_string = '''
     File is {0}
     Total read time is {1}
-    TOtal transform time is {2}
-    Total load time is {3}
-    Total loaded rows is {4}
-    '''.format(filename, read_excel_time, transform_time, load_time, loaded_rows)
+    TOtal transform load time is {2}
+    '''.format(filename, read_excel_time, transform_load_time)
     print(time_string)
 
 # ========================================================================
 # Operation Template
 # ========================================================================
 # transform operation
-def transformOperation(threadID, df, file):
+def transformLoadOperation(threadID, df, file):
     engine, connection = connect_mssql()
 
     if (not engine) or (not connection):
@@ -197,7 +170,7 @@ def transformOperation(threadID, df, file):
             print('cannot connect to SQL Server for TL Operation')
             print(argument)
     else:
-        # start_transform = time.time()
+        start_transform = time.time()
         needed_column = ['Order', 'Plant', 'Activity',
                         'LatstStartDateExecutn', 'LatstFinishDateExectn',
                         'ActStartDateExecution', 'ActStartTimeExecution', 'ActFinishDateExecutn', 'ActFinishTimeExecutn',
@@ -238,13 +211,11 @@ def transformOperation(threadID, df, file):
         date_column = ['plannedStartDate','plannedFinishDate',
                     'actualStartDateExecution','actualFinishDateExecution']
         for column in date_column:
-            # Uniform the date format to %Y-%m-%d, convert again to string, then replace NaT with None
             df[column] = pd.to_datetime(df[column].str[:10], format='%Y-%m-%d', errors='coerce').astype(str).replace({'NaT' : None})
 
         # Convert time column type
         time_column = ['actualStartTimeExecution', 'actualFinishTimeExecution']
         for column in time_column:
-            # Uniform the date format to %H:%M:%S, convert again to string, then replace NaT with None
             df[column] = pd.to_datetime(df[column].str[-8:], format='%H:%M:%S', errors='coerce').dt.time.replace({'NaT' : None})
 
         # Convert WorkCentre
@@ -289,32 +260,16 @@ def transformOperation(threadID, df, file):
                     'standardLabourTime','standardSetupTime','standardProcessTime','standardReworkTime',
                     'standardQueueTime',
                     'actualLabourTime','actualSetupTime','actualProcessTime','actualReworkTime']]
-        # transform_time = round(time.time() - start_transform)
-        # print(f'Total transform excel time of {file} is {transform_time}')
+        transform_time = round(time.time() - start_transform)
+        print(f'Total transform excel time of {file} is {transform_time}')
 
-        # start_load = time.time()
-        # load to temp table
-        # transformed_data.to_sql('TempProductionActivityTransaction', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
-
-        # just for checking
+        start_load = time.time()
         transformed_data.to_csv(f'result/{file}.csv',mode='a',header=True,index=False)
-        # load_time = round(time.time() - start_load)
+        load_time = round(time.time() - start_load)
 
-        # print(f'Total load excel time of {file} is {load_time}')
-
-        # queue_time_ops.put([file, transform_time, load_time])
+        print(f'Total load excel time of {file} is {load_time}')
 
         print(f'{threadID} finish transform load data operation of {file}')
-
-# load operation
-def loadOperation(filename, que):
-    # df = pd.read_csv(f'result/{filename}.csv')
-    engine, connection = connect_mssql()
-
-    # df.to_sql('TempProductionActivityTransaction', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
-    # temp_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityTransaction];").fetchone()[0]
-    temp_loaded_row = 20
-    que.put(temp_loaded_row)
 
 
 
@@ -322,7 +277,7 @@ def loadOperation(filename, que):
 # Confirmation Template
 # ========================================================================
 # transform confirmation
-def transformConfirmation(threadID, df, file):
+def transformLoadConfirmation(threadID, df, file):
     engine, connection = connect_mssql()
 
     if (not engine) or (not connection):
@@ -335,7 +290,7 @@ def transformConfirmation(threadID, df, file):
         Session = sessionmaker(engine)
         session = Session()
 
-        # start_transform = time.time()
+        start_transform = time.time()
         needed_column = ['Order', 'Plant',
                         'Posting Date', 'Time',
                         'Activity', 'Work Center', 'Operation Quantity (MEINH)', 'Personnel number',
@@ -372,14 +327,12 @@ def transformConfirmation(threadID, df, file):
         date_column = ['postingDate',
                     'executionStartDate','executionFinishDate']
         for column in date_column:
-            # Uniform the date format to %Y-%m-%d, convert again to string, then replace NaT with None
             df[column] = pd.to_datetime(df[column].str[:10], format='%Y-%m-%d', errors='coerce').astype(str).replace({'NaT' : None})
         
         # Convert time column type
         time_column = ['postingTime',
                     'executionStartTime', 'executionFinishTime']
         for column in time_column:
-            # Uniform the date format to %H:%M:%S, convert again to string, then replace NaT with None
             df[column] = pd.to_datetime(df[column].str[-8:], format='%H:%M:%S', errors='coerce').dt.time.replace({'NaT' : None})
 
         # Convert WorkCentre
@@ -441,31 +394,15 @@ def transformConfirmation(threadID, df, file):
                                             'confirmation', 'confirmCounter',
                                             'labourTime', 'setupTime', 'processTime', 'reworkTime',
                                             'executionStartDate', 'executionStartTime', 'executionFinishDate', 'executionFinishTime']]
-        # transform_time = round(time.time() - start_transform)
-        # print(f'Total transform excel time of {file} is {transform_time}')
+        transform_time = round(time.time() - start_transform)
+        print(f'Total transform excel time of {file} is {transform_time}')
 
-        # start_load = time.time()
-        # load to temp table
-        # transformed_data.to_sql('TempProductionActivityConfirmation', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
-        
+        start_load = time.time()
         transformed_data.to_csv(f'result/{file}.csv',mode='a',header=True,index=False)
-        # load_time = round(time.time() - start_load)
-
-        # print(f'Total load excel time of {file} is {load_time}')
-
-        # queue_time_cnf.put([file, transform_time, load_time])
+        load_time = round(time.time() - start_load)
+        print(f'Total load excel time of {file} is {load_time}')
 
         print(f'{threadID} finish transform load data confirmation of {file}')
-
-# load confirmation
-def loadConfirmation(filename, que):
-    df = pd.read_csv(f'result/{filename}.csv')
-    engine, connection = connect_mssql()
-
-    df.to_sql('TempProductionActivityConfirmation', schema='dbo', con=engine, if_exists='append', index=False, chunksize=MAX_INSERT_ROW)
-    temp_loaded_row = connection.execute("SELECT COUNT (ID) FROM [TW_Operational].[dbo].[TempProductionActivityConfirmation];").fetchone()[0]
-    # temp_loaded_row = 50
-    que.put(temp_loaded_row)
 
 
 # ========================================================================
